@@ -276,9 +276,18 @@ static void InitLocked()
 	}
 	ParseTracepoints(point_list);
 	const char* ranges_env = std::getenv("PCSX2_SIMPTRACE_EE_RANGES");
-	if (ranges_env && ranges_env[0] != '\0')
+	if (ranges_env)
 	{
-		ParseTraceRanges(ranges_env);
+		std::string ranges_value = Trim(ranges_env);
+		if (ranges_value.empty() || ranges_value == "0" || StringUtil::compareNoCase(ranges_value, "false") ||
+			StringUtil::compareNoCase(ranges_value, "off") || StringUtil::compareNoCase(ranges_value, "none"))
+		{
+			s_trace_range_count = 0;
+		}
+		else
+		{
+			ParseTraceRanges(ranges_value);
+		}
 	}
 	else
 	{

@@ -11,6 +11,7 @@ This build includes trace hooks intended for Simpsons Skateboarding load-chain r
   - `Firehose`: broad EE ranges plus pointer/parser/object windows for one-off deep dives
 
 You can still override any of these per run.
+If you want to explicitly disable EE range tracing, set `PCSX2_SIMPTRACE_EE_RANGES=off`.
 
 ## Fast launch helper
 
