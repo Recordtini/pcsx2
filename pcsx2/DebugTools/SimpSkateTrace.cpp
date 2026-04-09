@@ -40,6 +40,7 @@ static std::mutex s_lock;
 static bool s_init = false;
 static bool s_enabled = false;
 static std::FILE* s_fp = nullptr;
+static constexpr u32 s_request_block_addr = 0x0050A8A0;
 static std::array<u32, 32> s_tracepoints = {};
 static size_t s_tracepoint_count = 0;
 static std::array<PcRange, 32> s_trace_ranges = {};
@@ -272,7 +273,9 @@ static void InitLocked()
 	else
 	{
 		// Loader/dispatch conversion chain from current Simpsons Skateboarding reverse work.
-		point_list = "0x00131410,0x00131510,0x0013e510,0x0013e910,0x0011c4d8,0x002d5150,0x0030fd00";
+		point_list =
+			"0x00131410,0x00131510,0x001359d0,0x00136a10,0x0013e510,0x0013e910,"
+			"0x00190830,0x00190870,0x001908a0,0x00191360,0x00191430,0x0011c4d8,0x002d5150,0x0030fd00";
 	}
 	ParseTracepoints(point_list);
 	const char* ranges_env = std::getenv("PCSX2_SIMPTRACE_EE_RANGES");
@@ -540,6 +543,74 @@ static void AppendDatObjectFields(std::ostringstream& os, u32 object_addr)
 	   << "}";
 }
 
+static void AppendRequestBlockSnapshot(std::ostringstream& os, u32 block_addr)
+{
+	std::vector<u8> raw;
+	if (!ReadEEBytes(block_addr, 0x40, &raw))
+	{
+		os << ",\"request_block\":{\"addr\":" << block_addr << ",\"valid\":false}";
+		return;
+	}
+
+	std::array<u32, 16> words = {};
+	for (u32 i = 0; i < words.size(); i++)
+		ReadEEU32(block_addr + (i * 4), &words[i]);
+
+	os << ",\"request_block\":{"
+	   << "\"addr\":" << block_addr
+	   << ",\"valid\":true"
+	   << ",\"header_word\":" << words[0]
+	   << ",\"dispatch_key\":" << words[1]
+	   << ",\"active_words\":[";
+	for (size_t i = 1; i <= 7; i++)
+	{
+		if (i != 1)
+			os << ',';
+		os << words[i];
+	}
+	os << "],\"pending_words\":[";
+	for (size_t i = 8; i <= 14; i++)
+	{
+		if (i != 8)
+			os << ',';
+		os << words[i];
+	}
+	os << "],\"pending_flag\":" << words[15]
+	   << ",\"raw_hex\":\"" << JsonEscape(HexFromBytes(raw)) << "\""
+	   << "}";
+}
+
+static const char* TraceRoleForPc(u32 pc)
+{
+	switch (pc)
+	{
+		case 0x0013E510:
+			return "dat_object_entry";
+		case 0x0013E910:
+			return "dat_object_exit";
+		case 0x00190830:
+			return "request_apply";
+		case 0x00190870:
+			return "request_enqueue";
+		case 0x001908A0:
+			return "request_enqueue_internal";
+		case 0x00191360:
+			return "request_dispatch_primary";
+		case 0x00191430:
+			return "request_dispatch_secondary";
+		case 0x001359D0:
+			return "load_stage_handler";
+		case 0x00136A10:
+			return "load_stage_gate";
+		case 0x002D5150:
+			return "transition_dispatch";
+		case 0x0030FD00:
+			return "menu_location_confirm";
+		default:
+			return nullptr;
+	}
+}
+
 static void AppendObjectCandidate(std::ostringstream& os, const char* label, u32 object_addr)
 {
 	std::string custom;
@@ -686,6 +757,7 @@ void OnEETracepoint(u32 pc)
 	const u32 fp = cpuRegs.GPR.n.s8.UL[0];
 	const u32 gp = cpuRegs.GPR.n.gp.UL[0];
 	const u32 ra = cpuRegs.GPR.n.ra.UL[0];
+	const char* trace_role = TraceRoleForPc(pc);
 
 	const std::string a0_text = ReadEEString(a0);
 	const std::string a1_text = ReadEEString(a1);
@@ -732,6 +804,9 @@ void OnEETracepoint(u32 pc)
 	   << ",\"a3_str\":\"" << JsonEscape(a3_text) << "\""
 	   << ",\"s0_str\":\"" << JsonEscape(s0_text) << "\""
 	   << ",\"s1_str\":\"" << JsonEscape(s1_text) << "\"";
+
+	if (trace_role)
+		os << ",\"trace_role\":\"" << trace_role << "\"";
 
 	if (s_stack_words > 0)
 	{
@@ -888,6 +963,12 @@ void OnEETracepoint(u32 pc)
 	{
 		os << ",\"phase\":\"exit\"";
 		AppendDatObjectFields(os, s0);
+	}
+
+	if (pc == 0x00190830 || pc == 0x00190870 || pc == 0x001908A0 || pc == 0x00191360 ||
+		pc == 0x00191430 || pc == 0x002D5150 || pc == 0x0030FD00)
+	{
+		AppendRequestBlockSnapshot(os, s_request_block_addr);
 	}
 
 	os << "}";
