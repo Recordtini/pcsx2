@@ -23,6 +23,36 @@ class ReadAgg:
 
 
 def load_events(path: Path) -> Iterable[Dict[str, Any]]:
+    def strip_grouping_commas(text: str) -> str:
+        out: list[str] = []
+        in_string = False
+        escaped = False
+        length = len(text)
+        for idx, ch in enumerate(text):
+            if in_string:
+                out.append(ch)
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                out.append(ch)
+                continue
+            if (
+                ch == ","
+                and idx > 0
+                and idx + 1 < length
+                and text[idx - 1].isdigit()
+                and text[idx + 1].isdigit()
+            ):
+                continue
+            out.append(ch)
+        return "".join(out)
+
     with path.open("r", encoding="utf-8", errors="replace") as f:
         for line_no, line in enumerate(f, 1):
             text = line.strip()
@@ -30,8 +60,14 @@ def load_events(path: Path) -> Iterable[Dict[str, Any]]:
                 continue
             try:
                 yield json.loads(text)
-            except json.JSONDecodeError as e:
-                print(f"[warn] skipped malformed JSON line {line_no}: {e}")
+            except json.JSONDecodeError:
+                fixed = strip_grouping_commas(text)
+                if fixed == text:
+                    continue
+                try:
+                    yield json.loads(fixed)
+                except json.JSONDecodeError:
+                    continue
 
 
 def summarize(path: Path) -> None:

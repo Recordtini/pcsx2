@@ -12,7 +12,13 @@ function Resolve-Pcsx2Exe {
         return (Resolve-Path -LiteralPath $Candidate).Path
     }
 
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $scriptDir = if ($PSScriptRoot) {
+        $PSScriptRoot
+    } elseif ($MyInvocation.MyCommand.Path) {
+        Split-Path -Parent $MyInvocation.MyCommand.Path
+    } else {
+        (Get-Location).Path
+    }
     $rootDir = Resolve-Path (Join-Path $scriptDir "..")
     $defaultExe = Join-Path $rootDir "bin\pcsx2-qt.exe"
     if (Test-Path -LiteralPath $defaultExe) {

@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <locale>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -36,6 +37,13 @@ static std::FILE* s_fp = nullptr;
 static std::array<u32, 32> s_tracepoints = {};
 static size_t s_tracepoint_count = 0;
 static u64 s_seq = 0;
+
+static std::ostringstream NewJsonStream()
+{
+	std::ostringstream os;
+	os.imbue(std::locale::classic());
+	return os;
+}
 
 static std::string Trim(std::string s)
 {
@@ -150,7 +158,7 @@ static void InitLocked()
 	else
 	{
 		// Loader/dispatch conversion chain from current Simpsons Skateboarding reverse work.
-		point_list = "0x00131410,0x00131510,0x0013e510,0x0011c4d8,0x002d5150,0x0030fd00";
+		point_list = "0x00131410,0x00131510,0x0013e510,0x0013e910,0x0011c4d8,0x002d5150,0x0030fd00";
 	}
 	ParseTracepoints(point_list);
 
@@ -164,7 +172,7 @@ static void InitLocked()
 	}
 
 	s_enabled = true;
-	std::ostringstream os;
+	std::ostringstream os = NewJsonStream();
 	os << "{\"type\":\"trace_start\",\"note\":\"simpskate\",\"ee_tracepoints\":[";
 	for (size_t i = 0; i < s_tracepoint_count; i++)
 	{
@@ -217,6 +225,15 @@ static bool ReadEEU32(u32 ee_addr, u32* out)
 	return true;
 }
 
+static bool ReadEEU16(u32 ee_addr, u16* out)
+{
+	const u8* ptr = reinterpret_cast<const u8*>(PSM(ee_addr));
+	if (!ptr)
+		return false;
+	std::memcpy(out, ptr, sizeof(u16));
+	return true;
+}
+
 static bool ReadEEF32(u32 ee_addr, float* out)
 {
 	u32 word = 0;
@@ -224,6 +241,45 @@ static bool ReadEEF32(u32 ee_addr, float* out)
 		return false;
 	std::memcpy(out, &word, sizeof(float));
 	return std::isfinite(*out);
+}
+
+static void AppendDatObjectFields(std::ostringstream& os, u32 object_addr)
+{
+	u16 status = 0;
+	u16 unique_id = 0;
+	u32 flags = 0;
+	float x = 0.0f;
+	float y = 0.0f;
+	float z = 0.0f;
+	float rx = 0.0f;
+	float ry = 0.0f;
+	float rz = 0.0f;
+
+	const bool ok_status = ReadEEU16(object_addr + 0x32, &status);
+	const bool ok_uid = ReadEEU16(object_addr + 0x34, &unique_id);
+	const bool ok_flags = ReadEEU32(object_addr + 0x38, &flags);
+	const bool ok_x = ReadEEF32(object_addr + 0x3C, &x);
+	const bool ok_y = ReadEEF32(object_addr + 0x40, &y);
+	const bool ok_z = ReadEEF32(object_addr + 0x44, &z);
+	const bool ok_rx = ReadEEF32(object_addr + 0x48, &rx);
+	const bool ok_ry = ReadEEF32(object_addr + 0x4C, &ry);
+	const bool ok_rz = ReadEEF32(object_addr + 0x50, &rz);
+	const std::string custom = ReadEEString(object_addr + 0x54, 192);
+
+	os << ",\"obj\":{"
+	   << "\"addr\":" << object_addr
+	   << ",\"valid\":" << ((ok_status || ok_uid || ok_flags || ok_x || ok_y || ok_z || ok_rx || ok_ry || ok_rz) ? "true" : "false")
+	   << ",\"status\":" << status
+	   << ",\"unique_id\":" << unique_id
+	   << ",\"flags\":" << flags
+	   << ",\"x\":" << x
+	   << ",\"y\":" << y
+	   << ",\"z\":" << z
+	   << ",\"rx\":" << rx
+	   << ",\"ry\":" << ry
+	   << ",\"rz\":" << rz
+	   << ",\"custom\":\"" << JsonEscape(custom) << "\""
+	   << "}";
 }
 } // namespace
 
@@ -260,11 +316,14 @@ void OnEETracepoint(u32 pc)
 	const u32 a1 = cpuRegs.GPR.n.a1.UL[0];
 	const u32 a2 = cpuRegs.GPR.n.a2.UL[0];
 	const u32 a3 = cpuRegs.GPR.n.a3.UL[0];
+	const u32 s0 = cpuRegs.GPR.n.s0.UL[0];
+	const u32 s1 = cpuRegs.GPR.n.s1.UL[0];
+	const u32 ra = cpuRegs.GPR.n.ra.UL[0];
 
 	const std::string a1_text = ReadEEString(a1);
 	const std::string a0_text = ReadEEString(a0);
 
-	std::ostringstream os;
+	std::ostringstream os = NewJsonStream();
 	os << "{\"type\":\"ee_trace\""
 	   << ",\"seq\":" << ++s_seq
 	   << ",\"cycle\":" << cpuRegs.cycle
@@ -273,45 +332,24 @@ void OnEETracepoint(u32 pc)
 	   << ",\"a1\":" << a1
 	   << ",\"a2\":" << a2
 	   << ",\"a3\":" << a3
+	   << ",\"s0\":" << s0
+	   << ",\"s1\":" << s1
+	   << ",\"ra\":" << ra
 	   << ",\"a0_str\":\"" << JsonEscape(a0_text) << "\""
 	   << ",\"a1_str\":\"" << JsonEscape(a1_text) << "\"";
 
-	// DAT object post-conversion record candidate.
+	// DAT object record snapshots:
+	// - entry (pc=0x13e510): destination object in a1
+	// - return path (pc=0x13e910): destination object persisted in s0
 	if (pc == 0x0013E510 && a1 != 0)
 	{
-		u32 status = 0;
-		u32 unique_id = 0;
-		u32 flags = 0;
-		float x = 0.0f;
-		float y = 0.0f;
-		float z = 0.0f;
-		float rx = 0.0f;
-		float ry = 0.0f;
-		float rz = 0.0f;
-		const bool ok_status = ReadEEU32(a1 + 0x32, &status);
-		const bool ok_uid = ReadEEU32(a1 + 0x34, &unique_id);
-		const bool ok_flags = ReadEEU32(a1 + 0x38, &flags);
-		const bool ok_x = ReadEEF32(a1 + 0x3C, &x);
-		const bool ok_y = ReadEEF32(a1 + 0x40, &y);
-		const bool ok_z = ReadEEF32(a1 + 0x44, &z);
-		const bool ok_rx = ReadEEF32(a1 + 0x48, &rx);
-		const bool ok_ry = ReadEEF32(a1 + 0x4C, &ry);
-		const bool ok_rz = ReadEEF32(a1 + 0x50, &rz);
-		const std::string custom = ReadEEString(a1 + 0x54, 192);
-
-		os << ",\"obj\":{"
-		   << "\"valid\":" << ((ok_status || ok_uid || ok_flags || ok_x || ok_y || ok_z || ok_rx || ok_ry || ok_rz) ? "true" : "false")
-		   << ",\"status\":" << status
-		   << ",\"unique_id\":" << unique_id
-		   << ",\"flags\":" << flags
-		   << ",\"x\":" << x
-		   << ",\"y\":" << y
-		   << ",\"z\":" << z
-		   << ",\"rx\":" << rx
-		   << ",\"ry\":" << ry
-		   << ",\"rz\":" << rz
-		   << ",\"custom\":\"" << JsonEscape(custom) << "\""
-		   << "}";
+		os << ",\"phase\":\"entry\"";
+		AppendDatObjectFields(os, a1);
+	}
+	else if (pc == 0x0013E910 && s0 != 0)
+	{
+		os << ",\"phase\":\"exit\"";
+		AppendDatObjectFields(os, s0);
 	}
 
 	os << "}";
@@ -325,7 +363,7 @@ void OnIsoOpen(const std::string_view& iso_path)
 	if (!s_enabled)
 		return;
 
-	std::ostringstream os;
+	std::ostringstream os = NewJsonStream();
 	os << "{\"type\":\"iso_open\",\"path\":\"" << JsonEscape(std::string(iso_path)) << "\"}";
 	LogLineLocked(os.str());
 }
@@ -337,7 +375,7 @@ void OnIsoMapBuilt(size_t file_count, bool has_assets_blt, u32 assets_blt_lsn, u
 	if (!s_enabled)
 		return;
 
-	std::ostringstream os;
+	std::ostringstream os = NewJsonStream();
 	os << "{\"type\":\"iso_map\",\"files\":" << file_count
 	   << ",\"has_assets_blt\":" << (has_assets_blt ? "true" : "false")
 	   << ",\"assets_blt_lsn\":" << assets_blt_lsn
@@ -361,7 +399,7 @@ void OnIsoReadRun(
 	if (!s_enabled)
 		return;
 
-	std::ostringstream os;
+	std::ostringstream os = NewJsonStream();
 	os << "{\"type\":\"iso_read\""
 	   << ",\"start_lsn\":" << start_lsn
 	   << ",\"sector_count\":" << sector_count
