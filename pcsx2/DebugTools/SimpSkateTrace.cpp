@@ -673,7 +673,8 @@ void OnEETracepoint(u32 pc)
 	const u32 s0 = cpuRegs.GPR.n.s0.UL[0];
 	const u32 s1 = cpuRegs.GPR.n.s1.UL[0];
 	const u32 sp = cpuRegs.GPR.n.sp.UL[0];
-	const u32 fp = cpuRegs.GPR.n.fp.UL[0];
+	// PCSX2 exposes the frame-pointer register as s8 in the EE GPR struct.
+	const u32 fp = cpuRegs.GPR.n.s8.UL[0];
 	const u32 gp = cpuRegs.GPR.n.gp.UL[0];
 	const u32 ra = cpuRegs.GPR.n.ra.UL[0];
 
